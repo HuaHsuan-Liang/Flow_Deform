@@ -23,5 +23,5 @@ actions = jnp.array(
 # with jax
 obs, reward, done, info = env.step_diff(actions, state)
 next_state = info["state"]
-# image = env.render(next_state, visualize=True)
-# print(next_state.shape)
+image = env.render(next_state, visualize=True)
+# print(next_state)
