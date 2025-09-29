@@ -10,6 +10,11 @@ First, create and activate the conda environment using the provided `environment
 conda env create -f environment.yml
 conda activate flow_mujoco   # or the name defined in environment.yml
 ```
+To install the flow-policy int env. 
+``` bash
+cd fpo/playground
+pip install -e . 
+```
 ## 🚀 Training Scripts
 
 Two training scripts are available:
