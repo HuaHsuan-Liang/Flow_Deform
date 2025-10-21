@@ -9,9 +9,11 @@ import torch
 import wandb
 from stable_baselines3 import SAC
 from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.callbacks import BaseCallback
 from wandb.integration.sb3 import WandbCallback
 from datetime import datetime
-
+import time
+import numpy as np
 # from fpo.gridworld.models.sac import SAC
 from fpo.gridworld.utils.arguments import get_args
 from fpo.gridworld.models.ppo import PPO
@@ -23,6 +25,68 @@ from fpo.gridworld.utils.gridworld import GridWorldEnv
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
+class CustomSACWandbLogger(BaseCallback):
+    """
+    Custom logger for SAC training — logs episodic stats to wandb.
+    """
+    def __init__(self, log_interval=10000, verbose=1):
+        super().__init__(verbose)
+        self.log_interval = log_interval
+        self.last_time = time.time()
+        self.last_timesteps = 0
+
+        # Running buffers
+        self.episode_rewards = []
+        self.episode_lengths = []
+
+    def _on_step(self) -> bool:
+        # Record rewards if the env provides them
+        infos = self.locals.get("infos", [])
+        for info in infos:
+            if "episode" in info:
+                self.episode_rewards.append(info["episode"]["r"])
+                self.episode_lengths.append(info["episode"]["l"])
+
+        # Every N timesteps, compute stats and log
+        if (self.num_timesteps - self.last_timesteps) >= self.log_interval:
+            delta_t = time.time() - self.last_time
+            avg_ep_rews = np.mean(self.episode_rewards[-10:]) if self.episode_rewards else 0.0
+            avg_ep_lens = np.mean(self.episode_lengths[-10:]) if self.episode_lengths else 0.0
+
+            # SB3 stores losses in the logger (accessible via self.model.logger)
+            # But we can’t access directly per step — so just read last known value
+            try:
+                last_log = self.model.logger.name_to_value
+                avg_actor_loss = float(last_log.get("train/actor_loss", 0.0))
+            except Exception:
+                avg_actor_loss = 0.0
+
+            i_so_far = int(self.num_timesteps // self.log_interval)
+            t_so_far = int(self.num_timesteps)
+
+            print("\n-------------------- Iteration #{} --------------------".format(i_so_far), flush=True)
+            print(f"Average Episodic Length: {avg_ep_lens}", flush=True)
+            print(f"Average Episodic Return: {avg_ep_rews}", flush=True)
+            print(f"Average Actor Loss: {avg_actor_loss}", flush=True)
+            print(f"Timesteps So Far: {t_so_far}", flush=True)
+            print(f"Iteration took: {delta_t:.2f} secs", flush=True)
+            print("------------------------------------------------------\n", flush=True)
+
+            # Log to wandb
+            wandb.log({
+                "iteration": i_so_far,
+                "timesteps_so_far": t_so_far,
+                "avg_episode_length": float(avg_ep_lens),
+                "avg_episode_return": float(avg_ep_rews),
+                "avg_actor_loss": float(avg_actor_loss),
+                "iteration_duration_sec": float(delta_t),
+            })
+
+            # Update timers
+            self.last_timesteps = self.num_timesteps
+            self.last_time = time.time()
+
+        return True
 
 def train(env, hyperparameters, actor_model, critic_model, method):
         """
@@ -52,7 +116,6 @@ def train(env, hyperparameters, actor_model, critic_model, method):
                     verbose=1,
                     learning_rate=hyperparameters["lr"],
                     gamma=hyperparameters["gamma"],
-                    tensorboard_log=f"runs/{run_name}",  # ✅ logs to TensorBoard (which wandb syncs)
                 )
         else:
                 print(f"Unsupported method: {method}")
@@ -79,14 +142,10 @@ def train(env, hyperparameters, actor_model, critic_model, method):
         if method != "sac":
             model.learn(total_timesteps=200_000_000)
         else:
-            model.learn(
-                total_timesteps=200_000,
-                callback=WandbCallback(
-                    gradient_save_freq=100,     # optional: how often to log gradients
-                    model_save_path=f"models/{run_name}",
-                    verbose=2,
-                )
-            )
+            custom_logger = CustomSACWandbLogger(log_interval=5000)
+            model.learn(total_timesteps=200_000, callback=custom_logger)
+            model.save(f"{run_name}_final")
+            
 def test(env, actor_model, method):
         """
                 Tests the model.
@@ -185,8 +244,7 @@ def main(args):
                         project="fpo-diffusion-grid",
                         name=run_name,
                         config=hyperparameters,
-                        tags=[args.method, "gridworld", args.mode],
-                        sync_tensorboard=(args.method == "sac")
+                        tags=[args.method, "Pendulum-v1", args.mode]
                 )
                 
                 train(env=env, hyperparameters=hyperparameters, actor_model=args.actor_model, critic_model=args.critic_model, method=args.method)
