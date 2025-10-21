@@ -47,6 +47,7 @@ dependencies:
       - aiohappyeyeballs==2.6.1
       - aiohttp==3.12.15
       - aiosignal==1.4.0
+      - ale-py==0.11.2
       - annotated-types==0.7.0
       - asttokens==3.0.0
       - attrs==25.3.0
@@ -83,6 +84,7 @@ dependencies:
       - gitdb==4.0.12
       - gitpython==3.1.45
       - glfw==2.10.0
+      - grpcio==1.76.0
       - gymnasium==1.2.1
       - humanize==4.13.0
       - idna==3.10
@@ -114,6 +116,7 @@ dependencies:
       - logbook==1.8.2
       - logcc==2018.3.1
       - lxml==6.0.2
+      - markdown==3.9
       - markdown-it-py==4.0.0
       - markupsafe==3.0.2
       - matplotlib==3.9.2
@@ -172,6 +175,7 @@ dependencies:
       - pure-eval==0.2.3
       - pydantic==2.11.9
       - pydantic-core==2.33.2
+      - pygame==2.6.1
       - pyglet==2.1.9
       - pygments==2.19.2
       - pyopengl==3.1.10
@@ -197,8 +201,11 @@ dependencies:
       - six==1.17.0
       - smmap==5.0.2
       - soupsieve==2.8
+      - stable-baselines3==2.7.0
       - stack-data==0.6.3
       - sympy==1.14.0
+      - tensorboard==2.20.0
+      - tensorboard-data-server==0.7.2
       - tensorboardx==2.6.4
       - tensorstore==0.1.77
       - termcc==2019.8.2
