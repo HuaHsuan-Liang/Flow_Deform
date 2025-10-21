@@ -7,8 +7,12 @@ import gymnasium as gym
 import sys
 import torch
 import wandb
+from stable_baselines3 import SAC
+from stable_baselines3.common.env_util import make_vec_env
+from wandb.integration.sb3 import WandbCallback
 from datetime import datetime
 
+# from fpo.gridworld.models.sac import SAC
 from fpo.gridworld.utils.arguments import get_args
 from fpo.gridworld.models.ppo import PPO
 from fpo.gridworld.models.fpo_gym import FPO
@@ -39,12 +43,23 @@ def train(env, hyperparameters, actor_model, critic_model, method):
                 model = PPO(policy_class=FeedForwardNN, env=env, **hyperparameters)
         elif method == "fpo":
                 model = FPO(actor_class=DiffusionPolicy, critic_class=FeedForwardNN, env=env, **hyperparameters)
+        elif method == "sac":
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                run_name = f"SAC_lr{hyperparameters['lr']}_{timestamp}"
+                model = SAC(
+                    "MlpPolicy",
+                    env,
+                    verbose=1,
+                    learning_rate=hyperparameters["lr"],
+                    gamma=hyperparameters["gamma"],
+                    tensorboard_log=f"runs/{run_name}",  # ✅ logs to TensorBoard (which wandb syncs)
+                )
         else:
                 print(f"Unsupported method: {method}")
                 sys.exit(1)
-
-        model.actor.to(device)
-        model.critic.to(device)
+        if method != "sac":
+            model.actor.to(device)
+            model.critic.to(device)
         
         # Tries to load in an existing actor/critic model to continue training on
         if actor_model != '' and critic_model != '':
@@ -61,8 +76,17 @@ def train(env, hyperparameters, actor_model, critic_model, method):
         # Train the PPO model with a specified total timesteps
         # NOTE: You can change the total timesteps here, I put a big number just because
         # you can kill the process whenever you feel like PPO is converging
-        model.learn(total_timesteps=200_000_000)
-
+        if method != "sac":
+            model.learn(total_timesteps=200_000_000)
+        else:
+            model.learn(
+                total_timesteps=200_000,
+                callback=WandbCallback(
+                    gradient_save_freq=100,     # optional: how often to log gradients
+                    model_save_path=f"models/{run_name}",
+                    verbose=2,
+                )
+            )
 def test(env, actor_model, method):
         """
                 Tests the model.
@@ -162,6 +186,7 @@ def main(args):
                         name=run_name,
                         config=hyperparameters,
                         tags=[args.method, "gridworld", args.mode],
+                        sync_tensorboard=(args.method == "sac")
                 )
                 
                 train(env=env, hyperparameters=hyperparameters, actor_model=args.actor_model, critic_model=args.critic_model, method=args.method)
