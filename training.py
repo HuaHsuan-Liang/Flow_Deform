@@ -15,6 +15,7 @@ from datetime import datetime
 import time
 import numpy as np
 # from fpo.gridworld.models.sac import SAC
+from fpo.gridworld.models.sac import SAC_self
 from fpo.gridworld.utils.arguments import get_args
 from fpo.gridworld.models.ppo import PPO
 from fpo.gridworld.models.fpo_gym import FPO
@@ -107,6 +108,8 @@ def train(env, hyperparameters, actor_model, critic_model, method):
                 model = PPO(policy_class=FeedForwardNN, env=env, **hyperparameters)
         elif method == "fpo":
                 model = FPO(actor_class=DiffusionPolicy, critic_class=FeedForwardNN, env=env, **hyperparameters)
+        elif method == "sac_self":
+                model = SAC_self(policy_class=FeedForwardNN, env=env, **hyperparameters)
         elif method == "sac":
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 run_name = f"SAC_lr{hyperparameters['lr']}_{timestamp}"
@@ -120,7 +123,7 @@ def train(env, hyperparameters, actor_model, critic_model, method):
         else:
                 print(f"Unsupported method: {method}")
                 sys.exit(1)
-        if method != "sac":
+        if "sac" not in method:
             model.actor.to(device)
             model.critic.to(device)
         

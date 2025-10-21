@@ -1,211 +1,170 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.optim import Adam
-import numpy as np
 import gymnasium as gym
-from torch.distributions import MultivariateNormal
-
 import time
 import wandb
 
-class SAC:
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.optim import Adam
+from torch.distributions import MultivariateNormal
+
+class SAC_self:
     """
-    This is the SAC class we will use as our model in main.py
+    Soft Actor-Critic implementation matching the PPO API.
     """
     def __init__(self, policy_class, env, **hyperparameters):
-        """
-        Initializes the SAC model, including hyperparameters.
-
-        Parameters:
-            policy_class - the policy class to use for our actor and critic networks.
-            env - the environment to train on.
-            hyperparameters - all extra arguments passed into SAC that should be hyperparameters.
-        """
-        assert isinstance(env.observation_space, gym.spaces.Box)
-        assert isinstance(env.action_space, gym.spaces.Box)
-
+        # Environment check
+        assert type(env.observation_space) == gym.spaces.Box
+        assert type(env.action_space) == gym.spaces.Box
+        
+        # Initialize hyperparameters
         self._init_hyperparameters(hyperparameters)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+        
         # Environment info
         self.env = env
         self.obs_dim = env.observation_space.shape[0]
         self.act_dim = env.action_space.shape[0]
-        self.action_scale = torch.tensor(env.action_space.high, device=self.device)
-        self.action_bias = torch.tensor((env.action_space.high + env.action_space.low) / 2.0, device=self.device)
-
-        # Initialize networks
-        self.actor = policy_class(self.obs_dim, self.act_dim).to(self.device)   # ALG STEP 1
-        # self.critic = policy_class(self.obs_dim, 1).to(self.device)
-        # self.actor = policy_class(self.obs_dim, self.act_dim, is_actor=True).to(self.device)
-        self.critic1 = policy_class(self.obs_dim, 1).to(self.device)
-        self.critic2 = policy_class(self.obs_dim, 1).to(self.device)
-        self.target_critic1 = policy_class(self.obs_dim, 1).to(self.device)
-        self.target_critic2 = policy_class(self.obs_dim, 1).to(self.device)
-        
         self.cov_var = torch.full(size=(self.act_dim,), fill_value=0.5)
         self.cov_mat = torch.diag(self.cov_var).to(self.device)
-        # Copy weights to target networks
-        self.target_critic1.load_state_dict(self.critic1.state_dict())
-        self.target_critic2.load_state_dict(self.critic2.state_dict())
+        # Actor & Critic networks
+        self.actor = policy_class(self.obs_dim, self.act_dim).to(self.device)
+        self.critic1 = policy_class(self.obs_dim + self.act_dim, 1).to(self.device)
+        self.critic2 = policy_class(self.obs_dim + self.act_dim, 1).to(self.device)
+        self.critic1_target = policy_class(self.obs_dim + self.act_dim, 1).to(self.device)
+        self.critic2_target = policy_class(self.obs_dim + self.act_dim, 1).to(self.device)
+        self.critic1_target.load_state_dict(self.critic1.state_dict())
+        self.critic2_target.load_state_dict(self.critic2.state_dict())
 
         # Optimizers
-        self.actor_optim = Adam(self.actor.parameters(), lr=self.actor_lr)
-        self.critic1_optim = Adam(self.critic1.parameters(), lr=self.critic_lr)
-        self.critic2_optim = Adam(self.critic2.parameters(), lr=self.critic_lr)
-        self.log_alpha = torch.tensor(np.log(self.alpha_init), requires_grad=True, device=self.device)
-        self.alpha_optim = Adam([self.log_alpha], lr=self.alpha_lr)
+        self.actor_optim = Adam(self.actor.parameters(), lr=self.lr)
+        self.critic1_optim = Adam(self.critic1.parameters(), lr=self.lr)
+        self.critic2_optim = Adam(self.critic2.parameters(), lr=self.lr)
 
         # Replay buffer
         self.replay_buffer = []
-        self.max_buffer_size = self.buffer_size
 
-        # Logging
+        # Logger
         self.logger = {
             'delta_t': time.time_ns(),
             't_so_far': 0,
             'i_so_far': 0,
-            'actor_losses': [],
-            'critic_losses': [],
-            'alpha_losses': [],
-            'batch_rews': [],
             'batch_lens': [],
+            'batch_rews': [],
+            'actor_losses': [],
         }
 
     def learn(self, total_timesteps):
-        """
-        Main SAC training loop.
-        """
-        print(f"Learning... total timesteps: {total_timesteps}")
+        print(f"Learning SAC... Running up to {total_timesteps} timesteps")
+        print(f"{self.timesteps_per_batch} timesteps per batch for a total of {total_timesteps} timesteps")
+        
         t_so_far = 0
         i_so_far = 0
-        obs, _ = self.env.reset()
 
         while t_so_far < total_timesteps:
-            # === Rollout ===
-            batch_rews, batch_lens = self.rollout()
-            t_so_far += sum(batch_lens)
+            batch_obs, batch_acts, batch_rews, batch_next_obs, batch_dones = self.rollout()
+            t_so_far += len(batch_obs)
             i_so_far += 1
-            self.logger["t_so_far"] = t_so_far
-            self.logger["i_so_far"] = i_so_far
+            self.logger['t_so_far'] = t_so_far
+            self.logger['i_so_far'] = i_so_far
 
-            # === Learn ===
-            if len(self.replay_buffer) >= self.batch_size:
-                for _ in range(self.updates_per_iter):
-                    self.update()
+            # Convert batch to tensors
+            obs = torch.tensor(batch_obs, dtype=torch.float32).to(self.device)
+            acts = torch.tensor(batch_acts, dtype=torch.float32).to(self.device)
+            rews = torch.tensor(batch_rews, dtype=torch.float32).unsqueeze(-1).to(self.device)
+            next_obs = torch.tensor(batch_next_obs, dtype=torch.float32).to(self.device)
+            dones = torch.tensor(batch_dones, dtype=torch.float32).unsqueeze(-1).to(self.device)
 
-            # === Logging ===
+            # === Critic update ===
+            with torch.no_grad():
+                next_actions, next_log_probs = self.get_action(next_obs)
+                next_actions = torch.tensor(next_actions, dtype=torch.float32).to(self.device)
+                next_log_probs = torch.tensor(next_log_probs, dtype=torch.float32).to(self.device)
+                
+                q1_next = self.critic1_target(torch.cat([next_obs, next_actions], dim=-1))
+                q2_next = self.critic2_target(torch.cat([next_obs, next_actions], dim=-1))
+                q_next = torch.min(q1_next, q2_next) - self.alpha * next_log_probs
+                target_q = rews + self.gamma * (1 - dones) * q_next
+
+            # Critic losses
+            q1 = self.critic1(torch.cat([obs, acts], dim=-1))
+            q2 = self.critic2(torch.cat([obs, acts], dim=-1))
+            critic1_loss = nn.MSELoss()(q1, target_q)
+            critic2_loss = nn.MSELoss()(q2, target_q)
+
+            self.critic1_optim.zero_grad()
+            critic1_loss.backward()
+            self.critic1_optim.step()
+
+            self.critic2_optim.zero_grad()
+            critic2_loss.backward()
+            self.critic2_optim.step()
+
+            # === Actor update ===
+            actions_pred, log_probs = self.get_action(obs)
+            actions_pred = torch.tensor(actions_pred, dtype=torch.float32).to(self.device)
+            log_probs = torch.tensor(log_probs, dtype=torch.float32).to(self.device)
+            q1_pi = self.critic1(torch.cat([obs, actions_pred], dim=-1))
+            q2_pi = self.critic2(torch.cat([obs, actions_pred], dim=-1))
+            actor_loss = (self.alpha * log_probs - torch.min(q1_pi, q2_pi)).mean()
+
+            self.actor_optim.zero_grad()
+            actor_loss.backward()
+            self.actor_optim.step()
+
+            # === Soft update target networks ===
+            for param, target_param in zip(self.critic1.parameters(), self.critic1_target.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+            for param, target_param in zip(self.critic2.parameters(), self.critic2_target.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+
+            # Logging
+            self.logger['actor_losses'].append(actor_loss.detach().cpu())
             self._log_summary()
 
-            # Save models
+            # Save
             if i_so_far % self.save_freq == 0:
                 torch.save(self.actor.state_dict(), './sac_actor.pth')
                 torch.save(self.critic1.state_dict(), './sac_critic1.pth')
                 torch.save(self.critic2.state_dict(), './sac_critic2.pth')
-                wandb.save(f"{self.run_name}_sac_actor_iter{i_so_far}.pth")
+                wandb.save(f"{self.run_name}_actor_iter{i_so_far}.pth")
+                wandb.save(f"{self.run_name}_critic1_iter{i_so_far}.pth")
+                wandb.save(f"{self.run_name}_critic2_iter{i_so_far}.pth")
 
     def rollout(self):
-        """
-        Collects experience from the environment using the current policy.
-        """
-        batch_rews = []
-        batch_lens = []
+        batch_obs, batch_acts, batch_rews, batch_next_obs, batch_dones = [], [], [], [], []
+        obs, _ = self.env.reset()
+        done = False
+        ep_len = 0
+        ep_rews = 0
 
-        for _ in range(self.timesteps_per_batch):
-            episode_rews = []
-            obs, _ = self.env.reset()
-            done = False
-            t = 0
+        while len(batch_obs) < self.timesteps_per_batch:
+            action, _ = self.get_action(obs)
+            next_obs, reward, terminated, truncated, _ = self.env.step(action)
+            done = terminated | truncated
 
-            while not done and t < self.max_timesteps_per_episode:
-                action, _ = self.get_action(obs)
-                next_obs, reward, terminated, truncated, _ = self.env.step(action)
-                done = terminated or truncated
+            batch_obs.append(obs)
+            batch_acts.append(action)
+            batch_rews.append(reward)
+            batch_next_obs.append(next_obs)
+            batch_dones.append(done)
 
-                self.store_transition(obs, action, reward, next_obs, done)
-                episode_rews.append(reward)
-                obs = next_obs
-                t += 1
+            obs = next_obs
+            ep_len += 1
+            ep_rews += reward
 
-            batch_rews.append(sum(episode_rews))
-            batch_lens.append(t)
+            if done or ep_len >= self.max_timesteps_per_episode:
+                obs, _ = self.env.reset()
+                done = False
+                self.logger['batch_lens'].append(ep_len)
+                self.logger['batch_rews'].append(ep_rews)
+                ep_len = 0
+                ep_rews = 0
 
-        self.logger['batch_rews'] = batch_rews
-        self.logger['batch_lens'] = batch_lens
-        return batch_rews, batch_lens
+        return batch_obs, batch_acts, batch_rews, batch_next_obs, batch_dones
 
-    def store_transition(self, obs, act, rew, next_obs, done):
-        if len(self.replay_buffer) >= self.max_buffer_size:
-            self.replay_buffer.pop(0)
-        self.replay_buffer.append((obs, act, rew, next_obs, done))
-
-    def sample_batch(self):
-        idx = np.random.choice(len(self.replay_buffer), self.batch_size, replace=False)
-        batch = [self.replay_buffer[i] for i in idx]
-        obs, acts, rews, next_obs, dones = map(np.stack, zip(*batch))
-        return (
-            torch.tensor(obs, dtype=torch.float, device=self.device),
-            torch.tensor(acts, dtype=torch.float, device=self.device),
-            torch.tensor(rews, dtype=torch.float, device=self.device).unsqueeze(1),
-            torch.tensor(next_obs, dtype=torch.float, device=self.device),
-            torch.tensor(dones, dtype=torch.float, device=self.device).unsqueeze(1),
-        )
-
-    def update(self):
-        obs, acts, rews, next_obs, dones = self.sample_batch()
-
-        # === Sample next actions from policy ===
-        next_actions, next_log_probs = self.get_action(next_obs)
-        next_actions = torch.tensor(next_actions).to(self.device)
-        with torch.no_grad():
-            target_q1 = self.target_critic1(torch.cat([next_obs, next_actions], dim=-1))
-            target_q2 = self.target_critic2(torch.cat([next_obs, next_actions], dim=-1))
-            target_q = torch.min(target_q1, target_q2) - self.alpha * next_log_probs
-            target_value = rews + self.gamma * (1 - dones) * target_q
-
-        # === Critic update ===
-        current_q1 = self.critic1(torch.cat([obs, acts], dim=-1))
-        current_q2 = self.critic2(torch.cat([obs, acts], dim=-1))
-        critic1_loss = F.mse_loss(current_q1, target_value)
-        critic2_loss = F.mse_loss(current_q2, target_value)
-        critic_loss = critic1_loss + critic2_loss
-
-        self.critic1_optim.zero_grad()
-        self.critic2_optim.zero_grad()
-        critic_loss.backward()
-        self.critic1_optim.step()
-        self.critic2_optim.step()
-
-        # === Actor update ===
-        new_actions, log_probs = self.actor.get_action(obs)
-        q1_new = self.critic1(torch.cat([obs, new_actions], dim=-1))
-        q2_new = self.critic2(torch.cat([obs, new_actions], dim=-1))
-        q_new = torch.min(q1_new, q2_new)
-        actor_loss = (self.alpha * log_probs - q_new).mean()
-
-        self.actor_optim.zero_grad()
-        actor_loss.backward()
-        self.actor_optim.step()
-
-        # === Alpha (entropy temperature) update ===
-        alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
-        self.alpha_optim.zero_grad()
-        alpha_loss.backward()
-        self.alpha_optim.step()
-        self.alpha = self.log_alpha.exp()
-
-        # === Soft target update ===
-        self._soft_update(self.critic1, self.target_critic1)
-        self._soft_update(self.critic2, self.target_critic2)
-
-        # Logging
-        self.logger['actor_losses'].append(actor_loss.item())
-        self.logger['critic_losses'].append(critic_loss.item())
-        self.logger['alpha_losses'].append(alpha_loss.item())
-
-    def get_action(self, obs, deterministic=False):
-        obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(self.device)
+    def get_action(self, obs):
+        obs_tensor = torch.tensor(obs, dtype=torch.float).to(self.device)
         mean = self.actor(obs_tensor)
 
         # Create a distribution with the mean action and std from the covariance matrix above.
@@ -218,31 +177,23 @@ class SAC:
 
         # Calculate the log probability for that action
         log_prob = dist.log_prob(action)
-        # action, _ = self.actor.sample(obs_tensor, deterministic)
-        action = action.squeeze(0).detach().cpu().numpy()
-        return np.clip(action, -2, 2), log_prob
 
-    def _soft_update(self, net, target_net):
-        for target_param, param in zip(target_net.parameters(), net.parameters()):
-            target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
+        # Return the sampled action and the log probability of that action in our distribution
+        return action.detach().cpu().numpy(), log_prob.detach().cpu()
 
     def _init_hyperparameters(self, hyperparameters):
-        """Initialize default and custom hyperparameters."""
+        # Default hyperparameters
+        self.lr = 3e-4
         self.gamma = 0.99
-        self.tau = 0.005
-        self.actor_lr = 3e-4
-        self.critic_lr = 3e-4
-        self.alpha_lr = 3e-4
-        self.alpha_init = 0.2
-        self.buffer_size = int(1e6)
-        self.batch_size = 256
-        self.updates_per_iter = 1
-        self.target_entropy = -1.0
-        self.timesteps_per_batch = 1000
+        self.alpha = 0.2       # Entropy coefficient
+        self.tau = 0.005       # Soft update rate
+        self.timesteps_per_batch = 4000
         self.max_timesteps_per_episode = 1000
         self.save_freq = 10
-        self.run_name = "unnamed_sac_run"
+        self.render = False
+        self.run_name = "sac_run"
 
+        # Update with custom hyperparameters
         for param, val in hyperparameters.items():
             setattr(self, param, val)
 
@@ -250,28 +201,28 @@ class SAC:
         delta_t = self.logger['delta_t']
         self.logger['delta_t'] = time.time_ns()
         delta_t = (self.logger['delta_t'] - delta_t) / 1e9
-        t_so_far = self.logger['t_so_far']
-        i_so_far = self.logger['i_so_far']
-        avg_rew = np.mean(self.logger['batch_rews']) if self.logger['batch_rews'] else 0
-        avg_actor_loss = np.mean(self.logger['actor_losses']) if self.logger['actor_losses'] else 0
 
-        print(f"-------------------- Iteration #{i_so_far} --------------------")
-        print(f"Timesteps So Far: {t_so_far}")
-        print(f"Avg Return: {avg_rew:.2f}")
-        print(f"Avg Actor Loss: {avg_actor_loss:.5f}")
+        avg_ep_lens = np.mean(self.logger['batch_lens'])
+        avg_ep_rews = np.mean(self.logger['batch_rews'])
+        avg_actor_loss = np.mean([loss.float().cpu().item() for loss in self.logger['actor_losses']])
+
+        print(flush=True)
+        print(f"-------------------- Iteration #{self.logger['i_so_far']} --------------------")
+        print(f"Average Episodic Length: {avg_ep_lens:.2f}")
+        print(f"Average Episodic Return: {avg_ep_rews:.2f}")
+        print(f"Average Actor Loss: {avg_actor_loss:.5f}")
         print(f"Iteration took: {delta_t:.2f} secs")
         print("------------------------------------------------------", flush=True)
 
         wandb.log({
-            "iteration": i_so_far,
-            "timesteps_so_far": t_so_far,
-            "avg_episode_return": avg_rew,
-            "avg_actor_loss": avg_actor_loss,
-            "iteration_duration_sec": delta_t,
+            "iteration": self.logger['i_so_far'],
+            "avg_episode_length": float(avg_ep_lens),
+            "avg_episode_return": float(avg_ep_rews),
+            "avg_actor_loss": float(avg_actor_loss),
+            "iteration_duration_sec": float(delta_t)
         })
 
-        self.logger['batch_rews'] = []
         self.logger['batch_lens'] = []
+        self.logger['batch_rews'] = []
         self.logger['actor_losses'] = []
-        self.logger['critic_losses'] = []
-        self.logger['alpha_losses'] = []
+
