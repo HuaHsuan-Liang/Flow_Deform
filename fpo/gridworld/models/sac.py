@@ -60,6 +60,8 @@ class SAC_self:
             'batch_lens': [],
             'batch_rews': [],
             'actor_losses': [],
+            'critic_losses': [],
+            'alpha_losses': []
         }
 
     def learn(self, total_timesteps):
@@ -75,66 +77,75 @@ class SAC_self:
             i_so_far += 1
             self.logger['t_so_far'] = t_so_far
             self.logger['i_so_far'] = i_so_far
-            batch_obs, batch_acts, batch_rews, batch_next_obs, batch_dones = self.replay_buffer.sample(self.batch_size)
-            # Convert batch to tensors
-            obs = torch.tensor(batch_obs, dtype=torch.float32).to(self.device)
-            acts = torch.tensor(batch_acts, dtype=torch.float32).to(self.device)
-            rews = torch.tensor(batch_rews, dtype=torch.float32).unsqueeze(-1).to(self.device)
-            next_obs = torch.tensor(batch_next_obs, dtype=torch.float32).to(self.device)
-            dones = torch.tensor(batch_dones, dtype=torch.float32).unsqueeze(-1).to(self.device)
+            loss_actor = []
+            loss_critic = []
+            loss_alpha = []
+            for _ in range(self.n_updates_per_iteration):  
+                batch_obs, batch_acts, batch_rews, batch_next_obs, batch_dones = self.replay_buffer.sample(self.batch_size)
+                # Convert batch to tensors
+                obs = torch.tensor(batch_obs, dtype=torch.float32).to(self.device)
+                acts = torch.tensor(batch_acts, dtype=torch.float32).to(self.device)
+                rews = torch.tensor(batch_rews, dtype=torch.float32).unsqueeze(-1).to(self.device)
+                next_obs = torch.tensor(batch_next_obs, dtype=torch.float32).to(self.device)
+                dones = torch.tensor(batch_dones, dtype=torch.float32).unsqueeze(-1).to(self.device)
 
-            # === Critic update ===
-            with torch.no_grad():
-                next_actions, next_log_probs = self.get_action(next_obs)
-                next_actions = torch.tensor(next_actions, dtype=torch.float32).to(self.device)
-                next_log_probs = torch.tensor(next_log_probs, dtype=torch.float32).to(self.device)
+                # === Critic update ===
+                with torch.no_grad():
+                    next_actions, next_log_probs = self.get_action(next_obs)
+                    next_actions = torch.tensor(next_actions, dtype=torch.float32).to(self.device)
+                    next_log_probs = torch.tensor(next_log_probs, dtype=torch.float32).to(self.device)
+                    
+                    q1_next = self.critic1_target(torch.cat([next_obs, next_actions], dim=-1))
+                    q2_next = self.critic2_target(torch.cat([next_obs, next_actions], dim=-1))
+                    q_next = torch.min(q1_next, q2_next) - self.alpha.detach() * next_log_probs
+                    target_q = rews + self.gamma * (1 - dones) * q_next
+
+                # Critic losses
+                q1 = self.critic1(torch.cat([obs, acts], dim=-1))
+                q2 = self.critic2(torch.cat([obs, acts], dim=-1))
+                critic1_loss = nn.functional.mse_loss(q1, target_q)
+                critic2_loss = nn.functional.mse_loss(q2, target_q)
+
+                self.critic1_optim.zero_grad()
+                critic1_loss.backward()
+                self.critic1_optim.step()
+
+                self.critic2_optim.zero_grad()
+                critic2_loss.backward()
+                self.critic2_optim.step()
+
+                # === Actor update ===
+                actions_pred, log_probs = self.forward(obs)
+                actions_pred = torch.tensor(actions_pred, dtype=torch.float32).to(self.device)
+                log_probs = torch.tensor(log_probs, dtype=torch.float32).to(self.device)
+                q1_pi = self.critic1(torch.cat([obs, actions_pred], dim=-1))
+                q2_pi = self.critic2(torch.cat([obs, actions_pred], dim=-1))
+                actor_loss = (self.alpha.detach() * log_probs - torch.min(q1_pi, q2_pi)).mean()
+
+                self.actor_optim.zero_grad()
+                actor_loss.backward()
+                self.actor_optim.step()
                 
-                q1_next = self.critic1_target(torch.cat([next_obs, next_actions], dim=-1))
-                q2_next = self.critic2_target(torch.cat([next_obs, next_actions], dim=-1))
-                q_next = torch.min(q1_next, q2_next) - self.alpha.detach() * next_log_probs
-                target_q = rews + self.gamma * (1 - dones) * q_next
-
-            # Critic losses
-            q1 = self.critic1(torch.cat([obs, acts], dim=-1))
-            q2 = self.critic2(torch.cat([obs, acts], dim=-1))
-            critic1_loss = nn.MSELoss()(q1, target_q)
-            critic2_loss = nn.MSELoss()(q2, target_q)
-
-            self.critic1_optim.zero_grad()
-            critic1_loss.backward()
-            self.critic1_optim.step()
-
-            self.critic2_optim.zero_grad()
-            critic2_loss.backward()
-            self.critic2_optim.step()
-
-            # === Actor update ===
-            actions_pred, log_probs = self.forward(obs)
-            actions_pred = torch.tensor(actions_pred, dtype=torch.float32).to(self.device)
-            log_probs = torch.tensor(log_probs, dtype=torch.float32).to(self.device)
-            q1_pi = self.critic1(torch.cat([obs, actions_pred], dim=-1))
-            q2_pi = self.critic2(torch.cat([obs, actions_pred], dim=-1))
-            actor_loss = (self.alpha.detach() * log_probs - torch.min(q1_pi, q2_pi)).mean()
-
-            self.actor_optim.zero_grad()
-            actor_loss.backward()
-            self.actor_optim.step()
-            
-            alpha_loss = torch.tensor(0.0, device=self.device)
-            if self.log_alpha is not None:
-                alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
-                self.alpha_optim.zero_grad()
-                alpha_loss.backward()
-                self.alpha_optim.step()
-                
-            # === Soft update target networks ===
-            for param, target_param in zip(self.critic1.parameters(), self.critic1_target.parameters()):
-                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-            for param, target_param in zip(self.critic2.parameters(), self.critic2_target.parameters()):
-                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+                alpha_loss = torch.tensor(0.0, device=self.device)
+                if self.log_alpha is not None:
+                    alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
+                    self.alpha_optim.zero_grad()
+                    alpha_loss.backward()
+                    self.alpha_optim.step()
+                    
+                loss_actor.append(actor_loss.detach())
+                loss_critic.append(((critic1_loss + critic2_loss)/2).detach())
+                loss_alpha.append(alpha_loss.detach())  
+                # === Soft update target networks ===
+                for param, target_param in zip(self.critic1.parameters(), self.critic1_target.parameters()):
+                    target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+                for param, target_param in zip(self.critic2.parameters(), self.critic2_target.parameters()):
+                    target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
             # Logging
-            self.logger['actor_losses'].append(actor_loss.detach().cpu())
+            self.logger['actor_losses'].append(sum(loss_actor) / len(loss_actor))
+            self.logger['critic_losses'].append(sum(loss_critic) / len(loss_critic))
+            self.logger['alpha_losses'].append(sum(loss_alpha) / len(loss_alpha))
             self._log_summary()
 
             # Save
@@ -251,6 +262,7 @@ class SAC_self:
         self.tau = 0.005       # Soft update rate
         self.timesteps_per_batch = 4000
         self.max_timesteps_per_episode = 1000
+        self.n_updates_per_iteration = 5
         self.save_freq = 10
         self.render = False
         self.run_name = "sac_run"
@@ -284,12 +296,16 @@ class SAC_self:
         avg_ep_lens = np.mean(self.logger['batch_lens'])
         avg_ep_rews = np.mean(self.logger['batch_rews'])
         avg_actor_loss = np.mean([loss.float().cpu().item() for loss in self.logger['actor_losses']])
+        avg_critic_loss = np.mean([loss.float().cpu().item() for loss in self.logger['critic_losses']])
+        avg_alpha_loss = np.mean([loss.float().cpu().item() for loss in self.logger['alpha_losses']])
 
         print(flush=True)
         print(f"-------------------- Iteration #{self.logger['i_so_far']} --------------------")
         print(f"Average Episodic Length: {avg_ep_lens:.2f}")
         print(f"Average Episodic Return: {avg_ep_rews:.2f}")
         print(f"Average Actor Loss: {avg_actor_loss:.5f}")
+        print(f"Average Critic Loss: {avg_critic_loss:.5f}")
+        print(f"Average Alpha Loss: {avg_alpha_loss:.5f}")
         print(f"Iteration took: {delta_t:.2f} secs")
         print("------------------------------------------------------", flush=True)
 
@@ -298,12 +314,16 @@ class SAC_self:
             "avg_episode_length": float(avg_ep_lens),
             "avg_episode_return": float(avg_ep_rews),
             "avg_actor_loss": float(avg_actor_loss),
+            "avg_critic_loss": float(avg_critic_loss),
+            "avg_alpha_loss": float(avg_alpha_loss),
             "iteration_duration_sec": float(delta_t)
         })
 
         self.logger['batch_lens'] = []
         self.logger['batch_rews'] = []
         self.logger['actor_losses'] = []
+        self.logger['critic_losses'] = []
+        self.logger['alpha_losses'] = []
 
 
 Transition = namedtuple('Transition', ('state', 'action', 'reward', 'next_state', 'done'))

@@ -65,6 +65,7 @@ class PPO:
                         'batch_lens': [],       # episodic lengths in batch
                         'batch_rews': [],       # episodic returns in batch
                         'actor_losses': [],     # losses of actor network in current iteration
+                        'critic_losses': []     # losses of critic network in current iteration
                 }
 
         def learn(self, total_timesteps):
@@ -124,8 +125,8 @@ class PPO:
                         step = batch_obs.size(0)
                         inds = np.arange(step)
                         minibatch_size = step // self.num_minibatches
-                        loss = []
-                        
+                        loss_actor = []
+                        loss_critic = []
                         for _ in range(self.n_updates_per_iteration):                                                       # ALG STEP 6 & 7
                                 # === Learning rate annealing ===
                                 frac = (t_so_far - 1.0) / total_timesteps
@@ -175,15 +176,18 @@ class PPO:
                                         critic_loss.backward()
                                         nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
                                         self.critic_optim.step()
-                                        
-                                        loss.append(actor_loss.detach())
-                                # Approximating KL Divergence                                        
+
+                                        loss_actor.append(actor_loss.detach())
+                                        loss_critic.append(critic_loss.detach())
+                                # Approximating KL Divergence
                                 if approx_kl > self.target_kl:
                                         break
 
                         # === Logging ===
-                        avg_loss = sum(loss) / len(loss)
+                        avg_loss = sum(loss_actor) / len(loss_actor)
+                        
                         self.logger["actor_losses"].append(avg_loss)
+                        self.logger["critic_losses"].append(sum(loss_critic) / len(loss_critic))
                         if self.logger['i_so_far'] % 10 == 0: wandb.log({"advantage_hist": wandb.Histogram(A_k.cpu().numpy())})
                         self._log_summary()
                         
@@ -381,7 +385,8 @@ class PPO:
 
                 # Calculate the log probability for that action
                 log_prob = dist.log_prob(action)
-
+                # print(f"Sampled action: {action.cpu().numpy()}")
+                # exit()
                 # Return the sampled action and the log probability of that action in our distribution
                 return action.detach().cpu().numpy(), log_prob.detach().cpu()
 
@@ -486,18 +491,20 @@ class PPO:
                 avg_ep_lens = np.mean(self.logger['batch_lens'])
                 avg_ep_rews = np.mean([np.sum(ep_rews) for ep_rews in self.logger['batch_rews']])
                 avg_actor_loss = np.mean([losses.float().mean().cpu().item() for losses in self.logger['actor_losses']])
-
+                avg_critic_loss = np.mean([losses.float().mean().cpu().item() for losses in self.logger['critic_losses']])
                 # Round decimal places for more aesthetic logging messages
                 avg_ep_lens = str(round(avg_ep_lens, 2))
                 avg_ep_rews = str(round(avg_ep_rews, 2))
                 avg_actor_loss = str(round(avg_actor_loss, 5))
+                avg_critic_loss = str(round(avg_critic_loss, 5))
 
                 # Print logging statements
                 print(flush=True)
                 print(f"-------------------- Iteration #{i_so_far} --------------------", flush=True)
                 print(f"Average Episodic Length: {avg_ep_lens}", flush=True)
                 print(f"Average Episodic Return: {avg_ep_rews}", flush=True)
-                print(f"Average Loss: {avg_actor_loss}", flush=True)
+                print(f"Average Actor Loss: {avg_actor_loss}", flush=True)
+                print(f"Average Critic Loss: {avg_critic_loss}", flush=True)
                 print(f"Timesteps So Far: {t_so_far}", flush=True)
                 print(f"Iteration took: {delta_t} secs", flush=True)
                 print(f"------------------------------------------------------", flush=True)
@@ -510,6 +517,7 @@ class PPO:
                         "avg_episode_length": float(avg_ep_lens),
                         "avg_episode_return": float(avg_ep_rews),
                         "avg_actor_loss": float(avg_actor_loss),
+                        "avg_critic_loss": float(avg_critic_loss),
                         "iteration_duration_sec": float(delta_t),
                 })
                 
@@ -517,3 +525,4 @@ class PPO:
                 self.logger['batch_lens'] = []
                 self.logger['batch_rews'] = []
                 self.logger['actor_losses'] = []
+                self.logger['critic_losses'] = []

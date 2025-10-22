@@ -56,6 +56,7 @@ class FPO(PPO):
             'batch_lens': [],
             'batch_rews': [],
             'actor_losses': [],
+            'critic_losses': [],
         }
     
     def get_action(self, obs):
@@ -74,7 +75,10 @@ class FPO(PPO):
         )
         # dummy log_prob for API compatibility
         log_prob = torch.tensor(0.0)
+        # print(f"Sampled action: {action.cpu().numpy()}")
+        
         action = torch.clamp(action, self.env.action_space.low[0], self.env.action_space.high[0])
+        
         return action.squeeze().cpu().numpy(), log_prob, action_info
 
     def rollout(self):
@@ -117,7 +121,7 @@ class FPO(PPO):
                 obs_tensor = torch.tensor(obs, dtype=torch.float32).to(self.device)
                 val = self.critic(obs_tensor).detach()
                 
-                action = np.expand_dims(action, axis=0)
+                # action = np.expand_dims(action, axis=0)
                 obs, rew, terminated, truncated, _ = self.env.step(action)
                 done = terminated or truncated
                 
@@ -173,8 +177,8 @@ class FPO(PPO):
             step = batch_obs.size(0)
             inds = np.arange(step)
             minibatch_size = step // self.num_minibatches
-            loss = []
-
+            loss_actor = []
+            loss_critic = []
             for _ in range(self.n_updates_per_iteration):
                 # === Learning rate annealing ===
                 frac = (t_so_far - 1.0) / total_timesteps
@@ -237,9 +241,9 @@ class FPO(PPO):
                     nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
                     self.critic_optim.step()
 
-                    loss.append(actor_loss.detach())
+                    loss_actor.append(actor_loss.detach())
+                    loss_critic.append(critic_loss.detach())
 
-                    
                     # === Logging metrics ===
                     metrics = {
                         "clipped_ratio_mean": (torch.abs(rho_s - 1.0) > self.clip).float().mean().item(),
@@ -257,8 +261,10 @@ class FPO(PPO):
                     wandb.log(metrics)
 
 
-            avg_loss = sum(loss) / len(loss)
-            self.logger['actor_losses'].append(avg_loss)
+            avg_actor_loss = sum(loss_actor) / len(loss_actor)
+            avg_critic_loss = sum(loss_critic) / len(loss_critic)
+            self.logger['actor_losses'].append(avg_actor_loss)
+            self.logger['critic_losses'].append(avg_critic_loss)
             if self.logger['i_so_far'] % 10 == 0:
                 wandb.log({'advantage_hist': wandb.Histogram(A_k.cpu().numpy())})
             self._log_summary()

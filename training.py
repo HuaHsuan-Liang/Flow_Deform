@@ -219,11 +219,13 @@ def main(args):
                           }
 
         print(hyperparameters)
+        env_name = 'BipedalWalker-v3'
         # Creates the environment we'll be running. If you want to replace with your own
         # custom environment, note that it must inherit Gym and have both continuous
         # observation and action spaces.
-        env = gym.make('Pendulum-v1', render_mode='human' if args.mode == 'test' else 'rgb_array')
+        # env = gym.make('Pendulum-v1', render_mode='human' if args.mode == 'test' else 'rgb_array')
         # env = GridWorldEnv(mode=hyperparameters['grid_mode'])
+        env = gym.make(env_name, render_mode='human' if args.mode == 'test' else 'rgb_array')
 
         # Train or test, depending on the mode specified
         if args.mode == 'train':
@@ -247,7 +249,7 @@ def main(args):
                         project="fpo-diffusion-grid",
                         name=run_name,
                         config=hyperparameters,
-                        tags=[args.method, "Pendulum-v1", args.mode]
+                        tags=[args.method, env_name, args.mode]
                 )
                 
                 train(env=env, hyperparameters=hyperparameters, actor_model=args.actor_model, critic_model=args.critic_model, method=args.method)
