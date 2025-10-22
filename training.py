@@ -4,7 +4,7 @@
 """
 
 import gymnasium as gym
-import sys
+import sys,random
 import torch
 import wandb
 from stable_baselines3 import SAC
@@ -89,7 +89,17 @@ class CustomSACWandbLogger(BaseCallback):
 
         return True
 
-def train(env, hyperparameters, actor_model, critic_model, method):
+def set_seed(env, seed: int):
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        env.seed(seed)
+        env.action_space.seed(seed)
+        try:
+                env.observation_space.seed(seed)
+        except Exception:
+                pass
+def train(env, eval_env, hyperparameters, actor_model, critic_model, method):
         """
                 Trains the model.
 
@@ -105,20 +115,23 @@ def train(env, hyperparameters, actor_model, critic_model, method):
         print(f"Training using {method.upper()}", flush=True)
 
         if method == "ppo":
-                model = PPO(policy_class=FeedForwardNN, env=env, **hyperparameters)
+                model = PPO(policy_class=FeedForwardNN, env=env, eval_env=eval_env, **hyperparameters)
         elif method == "fpo":
-                model = FPO(actor_class=DiffusionPolicy, critic_class=FeedForwardNN, env=env, **hyperparameters)
+                model = FPO(actor_class=DiffusionPolicy, critic_class=FeedForwardNN, env=env, eval_env=eval_env, **hyperparameters)
         elif method == "sac_self":
-                model = SAC_self(policy_class=FeedForwardNN, env=env, **hyperparameters)
+                model = SAC_self(policy_class=FeedForwardNN, env=env, eval_env=eval_env, **hyperparameters)
         elif method == "sac":
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 run_name = f"SAC_lr{hyperparameters['lr']}_{timestamp}"
                 model = SAC(
                     "MlpPolicy",
                     env,
+                #     eval_env=eval_env,
                     verbose=1,
                     learning_rate=hyperparameters["lr"],
+                    seed=42,
                     gamma=hyperparameters["gamma"],
+                    batch_size=hyperparameters["timesteps_per_batch"],
                 )
         else:
                 print(f"Unsupported method: {method}")
@@ -226,7 +239,9 @@ def main(args):
         # env = gym.make('Pendulum-v1', render_mode='human' if args.mode == 'test' else 'rgb_array')
         # env = GridWorldEnv(mode=hyperparameters['grid_mode'])
         env = gym.make(env_name, render_mode='human' if args.mode == 'test' else 'rgb_array')
-
+        set_seed(env, 42)
+        eval_env = gym.make(env_name, render_mode='human' if args.mode == 'test' else 'rgb_array')
+        set_seed(eval_env, 42+100)
         # Train or test, depending on the mode specified
         if args.mode == 'train':
                 # Run name for wandb
@@ -251,8 +266,8 @@ def main(args):
                         config=hyperparameters,
                         tags=[args.method, env_name, args.mode]
                 )
-                
-                train(env=env, hyperparameters=hyperparameters, actor_model=args.actor_model, critic_model=args.critic_model, method=args.method)
+
+                train(env=env, eval_env=eval_env, hyperparameters=hyperparameters, actor_model=args.actor_model, critic_model=args.critic_model, method=args.method)
         else:
                 test(env=env, actor_model=args.actor_model, method=args.method)
 

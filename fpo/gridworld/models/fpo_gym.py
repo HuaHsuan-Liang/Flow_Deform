@@ -18,10 +18,11 @@ class FpoActionInfo:
     initial_cfm_loss: torch.Tensor # (*,)
 
 class FPO(PPO):
-    def __init__(self, actor_class, critic_class, env, **hyperparameters):
+    def __init__(self, actor_class, critic_class, env, eval_env, **hyperparameters):
         self.actor_class = actor_class
         self.critic_class = critic_class
         self.env = env
+        self.eval_env = eval_env
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._init_hyperparameters(hyperparameters)
 
@@ -80,7 +81,28 @@ class FPO(PPO):
         action = torch.clamp(action, self.env.action_space.low[0], self.env.action_space.high[0])
         
         return action.squeeze().cpu().numpy(), log_prob, action_info
-
+    
+    def evaluate_policy(self,env,episodes=5, max_episode_steps=None, render=False):
+        
+        returns = []
+        for _ in range(episodes):
+            s = env.reset()
+            done = False
+            ep_ret = 0.0
+            steps = 0
+            while not done:
+                action, _ = self.get_action(s)
+                s, reward, terminated, truncated, _ = env.step(action)
+                ep_ret += reward
+                steps += 1
+                done = terminated | truncated
+                if max_episode_steps and steps >= max_episode_steps:
+                    break
+                if render:
+                    env.render()
+            returns.append(ep_ret)
+        return float(np.mean(returns)), float(np.std(returns))
+    
     def rollout(self):
         batch_obs = []
         batch_acts = []
@@ -270,6 +292,11 @@ class FPO(PPO):
             self._log_summary()
 
             if i_so_far % self.save_freq == 0:
+                mean_ret, std_ret = self.evaluate_policy(self.eval_env, episodes=3)
+                wandb.log({
+                "eval/mean": mean_ret,
+                "eval/std": std_ret,
+                }, step=self.logger['i_so_far'])
                 torch.save(self.actor.state_dict(), './fpo_actor.pth')
                 torch.save(self.critic.state_dict(), './fpo_critic.pth')
                 wandb.save(f"{self.run_name}_actor_iter{i_so_far}.pth")

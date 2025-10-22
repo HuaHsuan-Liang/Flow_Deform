@@ -19,7 +19,7 @@ class PPO:
         """
                 This is the PPO class we will use as our model in main.py
         """
-        def __init__(self, policy_class, env, **hyperparameters):
+        def __init__(self, policy_class, env, eval_env, **hyperparameters):
                 """
                         Initializes the PPO model, including hyperparameters.
 
@@ -42,6 +42,7 @@ class PPO:
 
                 # Extract environment information
                 self.env = env
+                self.eval_env = eval_env
                 self.obs_dim = env.observation_space.shape[0]
                 self.act_dim = env.action_space.shape[0]
 
@@ -193,6 +194,11 @@ class PPO:
                         
                         # Save our model if it's time
                         if i_so_far % self.save_freq == 0:
+                                mean_ret, std_ret = self.evaluate_policy(self.eval_env, episodes=3)
+                                wandb.log({
+                                "eval/mean": mean_ret,
+                                "eval/std": std_ret,
+                                }, step=self.logger['i_so_far'])
                                 torch.save(self.actor.state_dict(), './ppo_actor.pth')
                                 torch.save(self.critic.state_dict(), './ppo_critic.pth')
                                 wandb.save(f"{self.run_name}_actor_iter{i_so_far}.pth")
@@ -329,6 +335,27 @@ class PPO:
 
                 return batch_obs, batch_acts, batch_log_probs, batch_rews, batch_lens, batch_vals, batch_dones                
                 # return batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens
+                
+        def evaluate_policy(self,env,episodes=5, max_episode_steps=None, render=False):
+        
+                returns = []
+                for _ in range(episodes):
+                        s = env.reset()
+                        done = False
+                        ep_ret = 0.0
+                        steps = 0
+                        while not done:
+                                action, _ = self.get_action(s)
+                                s, reward, terminated, truncated, _ = env.step(action)
+                                ep_ret += reward
+                                steps += 1
+                                done = terminated | truncated
+                                if max_episode_steps and steps >= max_episode_steps:
+                                        break
+                                if render:
+                                        env.render()
+                        returns.append(ep_ret)
+                return float(np.mean(returns)), float(np.std(returns))
 
         def compute_rtgs(self, batch_rews):
                 """
@@ -519,7 +546,7 @@ class PPO:
                         "avg_actor_loss": float(avg_actor_loss),
                         "avg_critic_loss": float(avg_critic_loss),
                         "iteration_duration_sec": float(delta_t),
-                })
+                }, step=self.logger['i_so_far'])
                 
                 # Reset batch-specific logging data
                 self.logger['batch_lens'] = []

@@ -19,7 +19,7 @@ class SAC_self:
     """
     Soft Actor-Critic implementation matching the PPO API.
     """
-    def __init__(self, policy_class, env, **hyperparameters):
+    def __init__(self, policy_class, env, eval_env, **hyperparameters):
         # Environment check
         assert type(env.observation_space) == gym.spaces.Box
         assert type(env.action_space) == gym.spaces.Box
@@ -30,6 +30,7 @@ class SAC_self:
         
         # Environment info
         self.env = env
+        self.eval_env = eval_env    
         self._init_hyperparameters(hyperparameters)
         self.obs_dim = env.observation_space.shape[0]
         self.act_dim = env.action_space.shape[0]
@@ -64,6 +65,7 @@ class SAC_self:
             'alpha_losses': []
         }
 
+    
     def learn(self, total_timesteps):
         print(f"Learning SAC... Running up to {total_timesteps} timesteps")
         print(f"{self.timesteps_per_batch} timesteps per batch for a total of {total_timesteps} timesteps")
@@ -150,13 +152,39 @@ class SAC_self:
 
             # Save
             if i_so_far % self.save_freq == 0:
+                mean_ret, std_ret = self.evaluate_policy(self.eval_env, episodes=3)
+                wandb.log({
+                    "eval/mean": mean_ret,
+                    "eval/std": std_ret,
+                    }, step=self.logger['i_so_far'])
                 torch.save(self.actor.state_dict(), './sac_actor.pth')
                 torch.save(self.critic1.state_dict(), './sac_critic1.pth')
                 torch.save(self.critic2.state_dict(), './sac_critic2.pth')
                 wandb.save(f"{self.run_name}_actor_iter{i_so_far}.pth")
                 wandb.save(f"{self.run_name}_critic1_iter{i_so_far}.pth")
                 wandb.save(f"{self.run_name}_critic2_iter{i_so_far}.pth")
-
+                
+    def evaluate_policy(self,env,episodes=5, max_episode_steps=None, render=False):
+        
+        returns = []
+        for _ in range(episodes):
+            s = env.reset()
+            done = False
+            ep_ret = 0.0
+            steps = 0
+            while not done:
+                action, _ = self.get_action(s)
+                s, reward, terminated, truncated, _ = env.step(action)
+                ep_ret += reward
+                steps += 1
+                done = terminated | truncated
+                if max_episode_steps and steps >= max_episode_steps:
+                    break
+                if render:
+                    env.render()
+            returns.append(ep_ret)
+        return float(np.mean(returns)), float(np.std(returns))
+    
     def rollout(self):
         count =0
         obs, _ = self.env.reset()
@@ -317,7 +345,7 @@ class SAC_self:
             "avg_critic_loss": float(avg_critic_loss),
             "avg_alpha_loss": float(avg_alpha_loss),
             "iteration_duration_sec": float(delta_t)
-        })
+        }, step=self.logger['i_so_far'])
 
         self.logger['batch_lens'] = []
         self.logger['batch_rews'] = []
