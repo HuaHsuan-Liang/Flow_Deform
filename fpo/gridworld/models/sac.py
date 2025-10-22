@@ -1,6 +1,13 @@
 import gymnasium as gym
 import time
 import wandb
+import argparse
+import math
+import os
+import random
+from collections import deque, namedtuple
+from dataclasses import dataclass
+from typing import Tuple, Optional, Deque
 
 import numpy as np
 import torch
@@ -18,11 +25,12 @@ class SAC_self:
         assert type(env.action_space) == gym.spaces.Box
         
         # Initialize hyperparameters
-        self._init_hyperparameters(hyperparameters)
+        
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Environment info
         self.env = env
+        self._init_hyperparameters(hyperparameters)
         self.obs_dim = env.observation_space.shape[0]
         self.act_dim = env.action_space.shape[0]
         self.cov_var = torch.full(size=(self.act_dim,), fill_value=0.5)
@@ -42,7 +50,7 @@ class SAC_self:
         self.critic2_optim = Adam(self.critic2.parameters(), lr=self.lr)
 
         # Replay buffer
-        self.replay_buffer = []
+        self.replay_buffer = ReplayBuffer(500_000, torch.device(self.device))
 
         # Logger
         self.logger = {
@@ -62,12 +70,12 @@ class SAC_self:
         i_so_far = 0
 
         while t_so_far < total_timesteps:
-            batch_obs, batch_acts, batch_rews, batch_next_obs, batch_dones = self.rollout()
-            t_so_far += len(batch_obs)
+            
+            t_so_far += self.rollout()
             i_so_far += 1
             self.logger['t_so_far'] = t_so_far
             self.logger['i_so_far'] = i_so_far
-
+            batch_obs, batch_acts, batch_rews, batch_next_obs, batch_dones = self.replay_buffer.sample(self.batch_size)
             # Convert batch to tensors
             obs = torch.tensor(batch_obs, dtype=torch.float32).to(self.device)
             acts = torch.tensor(batch_acts, dtype=torch.float32).to(self.device)
@@ -83,7 +91,7 @@ class SAC_self:
                 
                 q1_next = self.critic1_target(torch.cat([next_obs, next_actions], dim=-1))
                 q2_next = self.critic2_target(torch.cat([next_obs, next_actions], dim=-1))
-                q_next = torch.min(q1_next, q2_next) - self.alpha * next_log_probs
+                q_next = torch.min(q1_next, q2_next) - self.alpha.detach() * next_log_probs
                 target_q = rews + self.gamma * (1 - dones) * q_next
 
             # Critic losses
@@ -101,17 +109,24 @@ class SAC_self:
             self.critic2_optim.step()
 
             # === Actor update ===
-            actions_pred, log_probs = self.get_action(obs)
+            actions_pred, log_probs = self.forward(obs)
             actions_pred = torch.tensor(actions_pred, dtype=torch.float32).to(self.device)
             log_probs = torch.tensor(log_probs, dtype=torch.float32).to(self.device)
             q1_pi = self.critic1(torch.cat([obs, actions_pred], dim=-1))
             q2_pi = self.critic2(torch.cat([obs, actions_pred], dim=-1))
-            actor_loss = (self.alpha * log_probs - torch.min(q1_pi, q2_pi)).mean()
+            actor_loss = (self.alpha.detach() * log_probs - torch.min(q1_pi, q2_pi)).mean()
 
             self.actor_optim.zero_grad()
             actor_loss.backward()
             self.actor_optim.step()
-
+            
+            alpha_loss = torch.tensor(0.0, device=self.device)
+            if self.log_alpha is not None:
+                alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
+                self.alpha_optim.zero_grad()
+                alpha_loss.backward()
+                self.alpha_optim.step()
+                
             # === Soft update target networks ===
             for param, target_param in zip(self.critic1.parameters(), self.critic1_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
@@ -132,23 +147,23 @@ class SAC_self:
                 wandb.save(f"{self.run_name}_critic2_iter{i_so_far}.pth")
 
     def rollout(self):
-        batch_obs, batch_acts, batch_rews, batch_next_obs, batch_dones = [], [], [], [], []
+        count =0
         obs, _ = self.env.reset()
         done = False
         ep_len = 0
         ep_rews = 0
 
-        while len(batch_obs) < self.timesteps_per_batch:
-            action, _ = self.get_action(obs)
+        while count < self.timesteps_per_batch:
+            if (self.logger['t_so_far']<= 5000):
+                action = self.env.action_space.sample()
+            else:
+                action, _ = self.get_action(obs)
+                
             next_obs, reward, terminated, truncated, _ = self.env.step(action)
             done = terminated | truncated
 
-            batch_obs.append(obs)
-            batch_acts.append(action)
-            batch_rews.append(reward)
-            batch_next_obs.append(next_obs)
-            batch_dones.append(done)
-
+            count+=1
+            self.replay_buffer.push(obs, action, reward, next_obs, float(done))
             obs = next_obs
             ep_len += 1
             ep_rews += reward
@@ -161,12 +176,12 @@ class SAC_self:
                 ep_len = 0
                 ep_rews = 0
 
-        return batch_obs, batch_acts, batch_rews, batch_next_obs, batch_dones
+        return count
 
     def get_action(self, obs):
         obs_tensor = torch.tensor(obs, dtype=torch.float).to(self.device)
         mean = self.actor(obs_tensor)
-
+        mean = torch.tanh(mean)  # Ensure actions are in [-1, 1]
         # Create a distribution with the mean action and std from the covariance matrix above.
         # For more information on how this distribution works, check out Andrew Ng's lecture on it:
         # https://www.youtube.com/watch?v=JjB58InuTqM
@@ -179,8 +194,55 @@ class SAC_self:
         log_prob = dist.log_prob(action)
 
         # Return the sampled action and the log probability of that action in our distribution
-        return action.detach().cpu().numpy(), log_prob.detach().cpu()
+        return self._rescale_action(action.detach().cpu().numpy()), log_prob.detach().cpu()
+    
+    def forward(self, obs):
+        obs_tensor = torch.tensor(obs, dtype=torch.float).to(self.device)
+        mean = self.actor(obs_tensor)
+        mean = torch.tanh(mean)  # Ensure actions are in [-1, 1]
+        # Create a distribution with the mean action and std from the covariance matrix above.
+        # For more information on how this distribution works, check out Andrew Ng's lecture on it:
+        # https://www.youtube.com/watch?v=JjB58InuTqM
+        dist = MultivariateNormal(mean, self.cov_mat)
 
+        # Sample an action from the distribution
+        action = dist.sample()
+
+        # Calculate the log probability for that action
+        log_prob = dist.log_prob(action)
+
+        # Return the sampled action and the log probability of that action in our distribution
+        return self._rescale_action(action.cpu()), log_prob.cpu()
+
+    def _rescale_action(self, action_unscaled):
+        """
+        Map action from [-1, 1] to [low, high].
+        Works with both NumPy arrays and PyTorch tensors.
+        """
+        low, high = self.action_low, self.action_high
+
+        if isinstance(action_unscaled, torch.Tensor):
+            low = torch.as_tensor(low, dtype=action_unscaled.dtype, device=action_unscaled.device)
+            high = torch.as_tensor(high, dtype=action_unscaled.dtype, device=action_unscaled.device)
+            return low + 0.5 * (action_unscaled + 1.0) * (high - low)
+        else:  # NumPy
+            return low + 0.5 * (action_unscaled + 1.0) * (high - low)
+
+
+    def _inv_rescale_action(self, action):
+        """
+        Map action from [low, high] back to [-1, 1].
+        Works with both NumPy arrays and PyTorch tensors.
+        """
+        low, high = self.action_low, self.action_high
+
+        if isinstance(action, torch.Tensor):
+            low = torch.as_tensor(low, dtype=action.dtype, device=action.device)
+            high = torch.as_tensor(high, dtype=action.dtype, device=action.device)
+            return 2.0 * (action - low) / (high - low) - 1.0
+        else:  # NumPy
+            return 2.0 * (action - low) / (high - low) - 1.0
+    
     def _init_hyperparameters(self, hyperparameters):
         # Default hyperparameters
         self.lr = 3e-4
@@ -192,11 +254,28 @@ class SAC_self:
         self.save_freq = 10
         self.render = False
         self.run_name = "sac_run"
-
+        self.action_low = self.env.action_space.low
+        self.action_high = self.env.action_space.high
+        self.target_entropy = -float(self.env.action_space.shape[0])  # Target entropy heuristic
+        # log alpha parameter
+        self.log_alpha = torch.tensor(0.0, requires_grad=True, device=self.device)
+        self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=self.lr)
+        self.batch_size = 256
         # Update with custom hyperparameters
         for param, val in hyperparameters.items():
             setattr(self, param, val)
 
+    @property
+    def alpha(self):
+        if self.log_alpha is None:
+            return self._alpha_fixed
+        else:
+            return self.log_alpha.exp()
+
+    @alpha.setter
+    def alpha(self, value):
+        self._alpha_fixed = value
+        
     def _log_summary(self):
         delta_t = self.logger['delta_t']
         self.logger['delta_t'] = time.time_ns()
@@ -226,3 +305,26 @@ class SAC_self:
         self.logger['batch_rews'] = []
         self.logger['actor_losses'] = []
 
+
+Transition = namedtuple('Transition', ('state', 'action', 'reward', 'next_state', 'done'))
+
+class ReplayBuffer:
+    def __init__(self, capacity: int, device: torch.device):
+        self.capacity = capacity
+        self.device = device
+        self.buffer: Deque[Transition] = deque(maxlen=capacity)
+
+    def push(self, *args):
+        self.buffer.append(Transition(*args))
+
+    def sample(self, batch_size: int):
+        batch = random.sample(self.buffer, batch_size)
+        states = torch.tensor(np.array([b.state for b in batch]), dtype=torch.float32, device=self.device)
+        actions = torch.tensor(np.array([b.action for b in batch]), dtype=torch.float32, device=self.device)
+        rewards = torch.tensor(np.array([b.reward for b in batch]), dtype=torch.float32, device=self.device).unsqueeze(1)
+        next_states = torch.tensor(np.array([b.next_state for b in batch]), dtype=torch.float32, device=self.device)
+        dones = torch.tensor(np.array([b.done for b in batch]), dtype=torch.float32, device=self.device).unsqueeze(1)
+        return states, actions, rewards, next_states, dones
+
+    def __len__(self):
+        return len(self.buffer)
