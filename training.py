@@ -93,7 +93,7 @@ def set_seed(env, seed: int):
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
-        env.seed(seed)
+        env.reset(seed=seed)
         env.action_space.seed(seed)
         try:
                 env.observation_space.seed(seed)
