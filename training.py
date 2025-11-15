@@ -12,7 +12,8 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import BaseCallback
 from wandb.integration.sb3 import WandbCallback
 from datetime import datetime
-import time
+import time, sys
+import pathlib as Path
 import numpy as np
 # from fpo.gridworld.models.sac import SAC
 from fpo.gridworld.models.sac_test import SAC_self
@@ -23,6 +24,11 @@ from fpo.gridworld.models.network import FeedForwardNN
 from fpo.gridworld.models.diffusion_policy import DiffusionPolicy
 from fpo.gridworld.utils.eval_policy import eval_policy
 from fpo.gridworld.utils.gridworld import GridWorldEnv
+
+
+sys.path.append(str(Path.Path(__file__).resolve().parent))
+
+from module_fsac.env_wrapper import NormalizeObsActWrapper
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
@@ -232,15 +238,15 @@ def main(args):
                           }
 
         print(hyperparameters)
-        env_name = 'BipedalWalker-v3'
+        env_name = 'Pendulum-v1'
         # Creates the environment we'll be running. If you want to replace with your own
         # custom environment, note that it must inherit Gym and have both continuous
         # observation and action spaces.
         # env = gym.make('Pendulum-v1', render_mode='human' if args.mode == 'test' else 'rgb_array')
         # env = GridWorldEnv(mode=hyperparameters['grid_mode'])
-        env = gym.make(env_name, render_mode='human' if args.mode == 'test' else 'rgb_array')
+        env = NormalizeObsActWrapper(gym.make(env_name, render_mode='human' if args.mode == 'test' else 'rgb_array'))
         set_seed(env, 42)
-        eval_env = gym.make(env_name, render_mode='human' if args.mode == 'test' else 'rgb_array')
+        eval_env = NormalizeObsActWrapper(gym.make(env_name, render_mode='human' if args.mode == 'test' else 'rgb_array'))
         set_seed(eval_env, 42+100)
         # Train or test, depending on the mode specified
         if args.mode == 'train':
