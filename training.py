@@ -15,7 +15,7 @@ from datetime import datetime
 import time
 import numpy as np
 # from fpo.gridworld.models.sac import SAC
-from fpo.gridworld.models.sac import SAC_self
+from fpo.gridworld.models.sac_test import SAC_self
 from fpo.gridworld.utils.arguments import get_args
 from fpo.gridworld.models.ppo import PPO
 from fpo.gridworld.models.fpo_gym import FPO
