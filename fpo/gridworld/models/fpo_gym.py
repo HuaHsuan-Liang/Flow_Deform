@@ -77,8 +77,13 @@ class FPO(PPO):
         # dummy log_prob for API compatibility
         log_prob = torch.tensor(0.0)
         # print(f"Sampled action: {action.cpu().numpy()}")
-        
-        action = torch.clamp(action, self.env.action_space.low[0], self.env.action_space.high[0])
+        low = torch.as_tensor(self.env.action_space.low, 
+                      device=action.device, dtype=action.dtype)[None, None, :]
+        high = torch.as_tensor(self.env.action_space.high, 
+                            device=action.device, dtype=action.dtype)[None, None, :]
+
+        action = torch.clamp(action, low, high)
+        # action = torch.clamp(action, self.env.action_space.low[0], self.env.action_space.high[0])
         
         return action.squeeze().cpu().numpy(), log_prob, action_info
     
@@ -134,7 +139,7 @@ class FPO(PPO):
                 if self.render and (self.logger['i_so_far'] % self.render_every_i == 0) and len(batch_lens) == 0:
                     self.env.render()
 
-                ep_dones.append(done)
+                
                 t += 1
                 # Track observations in this batch                
                 batch_obs.append(obs)
@@ -153,6 +158,7 @@ class FPO(PPO):
                 batch_acts.append(action)
                 batch_log_probs.append(log_prob)
                 batch_action_info.append(action_info)
+                ep_dones.append(done)
                 if done:
                     break
 
@@ -296,7 +302,7 @@ class FPO(PPO):
                 wandb.log({
                 "eval/mean": mean_ret,
                 "eval/std": std_ret,
-                }, step=self.logger['i_so_far'])
+                })
                 torch.save(self.actor.state_dict(), './fpo_actor.pth')
                 torch.save(self.critic.state_dict(), './fpo_critic.pth')
                 wandb.save(f"{self.run_name}_actor_iter{i_so_far}.pth")
