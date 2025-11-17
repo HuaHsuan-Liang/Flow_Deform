@@ -91,7 +91,7 @@ class FPO(PPO):
         
         returns = []
         for _ in range(episodes):
-            s = env.reset()
+            s,_ = env.reset()
             done = False
             ep_ret = 0.0
             steps = 0
