@@ -96,7 +96,7 @@ class FPO(PPO):
             ep_ret = 0.0
             steps = 0
             while not done:
-                action, _ = self.get_action(s)
+                action, _ , action_info = self.get_action(s)
                 s, reward, terminated, truncated, _ = env.step(action)
                 ep_ret += reward
                 steps += 1
