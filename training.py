@@ -238,7 +238,7 @@ def main(args):
                           }
 
         print(hyperparameters)
-        env_name = 'Pendulum-v1'
+        env_name = 'BipedalWalker-v3'
         # Creates the environment we'll be running. If you want to replace with your own
         # custom environment, note that it must inherit Gym and have both continuous
         # observation and action spaces.
