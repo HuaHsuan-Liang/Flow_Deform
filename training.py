@@ -165,7 +165,7 @@ def train(env, eval_env, hyperparameters, actor_model, critic_model, method):
             model.learn(total_timesteps=200_000_000)
         else:
             custom_logger = CustomSACWandbLogger(log_interval=5000)
-            model.learn(total_timesteps=200_000, callback=custom_logger)
+            model.learn(total_timesteps=5_000_000, callback=custom_logger)
             model.save(f"{run_name}_final")
             
 def test(env, actor_model, method):
@@ -222,20 +222,21 @@ def main(args):
         # NOTE: Here's where you can set default hyperparameters. I don't include them as part of
         # ArgumentParser because it's too annoying to type them every time at command line. Instead, you can change them here.
         # To see a list of hyperparameters, look in ppo.py at function _init_hyperparameters
+        # 
+        
         hyperparameters = {
-                                'timesteps_per_batch': 2048,
-                                'max_timesteps_per_episode': 200, 
-                                'gamma': 0.99, 
-                                'n_updates_per_iteration': 10,
-                                'lr': 3e-4, 
-                                'clip': 0.2,
-                                'render': True,
-                                'render_every_i': 1000,
-                                # FPO specific parameters:
-                                'grid_mode': 'two_walls',
-                                'num_fpo_samples': 50,
-                                'positive_advantage': False,
-                          }
+                'timesteps_per_batch': 4096,           # Larger batches
+                'max_timesteps_per_episode': 1600,     # BipedalWalker's full episode
+                'gamma': 0.99, 
+                'n_updates_per_iteration': 10,
+                'lr': 3e-4,
+                'batch_size': 256,
+                'replay_capacity': 1_000_000,          # Larger replay buffer
+                'start_steps': 10000,                   # More random exploration
+                'tau': 0.005,
+                'save_freq': 50,                        # Evaluate less frequently
+                'video_freq': 200,                      # Record video less often
+                }
 
         print(hyperparameters)
         env_name = 'BipedalWalker-v3'
