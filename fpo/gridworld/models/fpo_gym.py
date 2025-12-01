@@ -59,6 +59,9 @@ class FPO(PPO):
             'actor_losses': [],
             'critic_losses': [],
         }
+
+        # Track best evaluation mean return for checkpointing
+        self.best_mean_ret = -float("inf")
     
     def get_action(self, obs):
         """
@@ -294,10 +297,21 @@ class FPO(PPO):
             if i_so_far % self.save_freq == 0:
                 mean_ret, std_ret = self.evaluate_policy(self.eval_env, episodes=3)
                 wandb.log({
-                "eval/mean": mean_ret,
-                "eval/std": std_ret,
+                    "eval/mean": mean_ret,
+                    "eval/std": std_ret,
                 }, step=self.logger['i_so_far'])
                 torch.save(self.actor.state_dict(), './fpo_actor.pth')
                 torch.save(self.critic.state_dict(), './fpo_critic.pth')
                 wandb.save(f"{self.run_name}_actor_iter{i_so_far}.pth")
                 wandb.save(f"{self.run_name}_critic_iter{i_so_far}.pth")
+
+                # Save best checkpoints if improved
+                if mean_ret > self.best_mean_ret:
+                    self.best_mean_ret = mean_ret
+                    best_actor_path = f"{self.run_name}_best_actor.pth"
+                    best_critic_path = f"{self.run_name}_best_critic.pth"
+                    torch.save(self.actor.state_dict(), best_actor_path)
+                    torch.save(self.critic.state_dict(), best_critic_path)
+                    wandb.summary["best_eval_mean_return"] = mean_ret
+                    wandb.save(best_actor_path)
+                    wandb.save(best_critic_path)

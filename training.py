@@ -5,6 +5,7 @@
 
 import gymnasium as gym
 import sys,random
+from typing import Optional
 import torch
 import wandb
 from stable_baselines3 import SAC
@@ -25,6 +26,10 @@ from fpo.gridworld.models.diffusion_policy import DiffusionPolicy
 from fpo.gridworld.utils.eval_policy import eval_policy
 from fpo.gridworld.utils.gridworld import GridWorldEnv
 
+# JAX FPO playground training 
+from flow_policy import fpo as playground_fpo
+from fpo.playground.scripts import train_fpo as playground_train_fpo
+
 
 sys.path.append(str(Path.Path(__file__).resolve().parent))
 
@@ -32,6 +37,29 @@ from module_fsac.env_wrapper import NormalizeObsActWrapper
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
+
+
+def run_playground_fpo(
+        env_name: str,
+        wandb_entity: str,
+        wandb_project: str,
+        exp_name: str = "",
+        seed: int = 0,
+        config: Optional[playground_fpo.FpoConfig] = None,
+) -> None:
+        if config is None:
+                config = playground_fpo.FpoConfig()
+
+        playground_train_fpo.main(
+                env_name=env_name,
+                wandb_entity=wandb_entity,
+                wandb_project=wandb_project,
+                config=config,
+                exp_name=exp_name,
+                seed=seed,
+        )
+
+
 class CustomSACWandbLogger(BaseCallback):
     """
     Custom logger for SAC training — logs episodic stats to wandb.
@@ -219,6 +247,20 @@ def main(args):
                 Return:
                         None
         """
+        # Run JAX FPO playground training
+        if args.method == 'fpo_pg':
+                if not args.wandb_entity or not args.wandb_project:
+                        print("For method=fpo_pg you must provide --wandb_entity and --wandb_project.", flush=True)
+                        sys.exit(1)
+
+                print(f"Running JAX FPO playground with env='{args.pg_env_name}'", flush=True)
+                run_playground_fpo(
+                        env_name=args.pg_env_name,
+                        wandb_entity=args.wandb_entity,
+                        wandb_project=args.wandb_project,
+                )
+                return
+
         # NOTE: Here's where you can set default hyperparameters. I don't include them as part of
         # ArgumentParser because it's too annoying to type them every time at command line. Instead, you can change them here.
         # To see a list of hyperparameters, look in ppo.py at function _init_hyperparameters
@@ -272,6 +314,18 @@ def main(args):
                         config=hyperparameters,
                         tags=[args.method, env_name, args.mode]
                 )
+
+                # If running under a W&B Sweep, override hyperparameters with wandb.config
+                try:
+                        cfg = dict(wandb.config)
+                        # keep run_name stable even if config changes
+                        cfg["run_name"] = run_name
+                        # merge only known keys to avoid surprises
+                        for k in hyperparameters.keys():
+                                if k in cfg:
+                                        hyperparameters[k] = cfg[k]
+                except Exception:
+                        pass
 
                 train(env=env, eval_env=eval_env, hyperparameters=hyperparameters, actor_model=args.actor_model, critic_model=args.critic_model, method=args.method)
         else:

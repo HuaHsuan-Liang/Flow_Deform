@@ -1,0 +1,36 @@
+program: training.py
+method: random
+
+metric:
+  name: eval/mean
+  goal: maximize
+
+parameters:
+  method:
+    values: [fpo]
+
+  lr:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 1e-3
+
+  timesteps_per_batch:
+    values: [2048, 4096, 8192]
+
+  num_fpo_samples:
+    values: [16, 32, 64]
+
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - --mode
+  - train
+  - --method
+  - ${method}
+  - --lr
+  - ${lr}
+  - --timesteps_per_batch
+  - ${timesteps_per_batch}
+  - --num_fpo_samples
+  - ${num_fpo_samples}

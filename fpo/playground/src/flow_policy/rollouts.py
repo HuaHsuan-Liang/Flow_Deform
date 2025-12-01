@@ -93,7 +93,11 @@ class EvalOutputs:
         # Log histograms with appropriate masking
         # First, log simple histograms (rewards, steps)
         for key, values in self.histogram_metrics.items():
-            metrics[f"eval/{key}"] = wandb.Histogram(onp.array(values).tolist())
+            arr = onp.array(values)
+            finite = onp.isfinite(arr)
+            arr = arr[finite]
+            if arr.size > 0:
+                metrics[f"eval/{key}"] = wandb.Histogram(arr.tolist())
 
         # Then log action histograms with masking
         action_dim = self.actions.shape[-1]
@@ -104,7 +108,11 @@ class EvalOutputs:
             # Apply mask to get only valid actions
             masked_actions = flat_actions[:, i][flat_mask > 0]
             if masked_actions.size > 0:  # Only log if there are valid actions
-                metrics[f"eval/action_{i}"] = wandb.Histogram(masked_actions.tolist())
+                finite_actions = masked_actions[onp.isfinite(masked_actions)]
+                if finite_actions.size > 0:
+                    metrics[f"eval/action_{i}"] = wandb.Histogram(
+                        finite_actions.tolist()
+                    )
 
         run.log(metrics, step=step)
 

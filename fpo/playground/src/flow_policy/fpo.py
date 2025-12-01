@@ -44,7 +44,7 @@ class FpoConfig:
     batch_size: jdc.Static[int] = 1024
     discounting: float = 0.995
     episode_length: int = 1000
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-4
     normalize_observations: jdc.Static[bool] = True
     num_envs: jdc.Static[int] = 2048
     num_evals: jdc.Static[int] = 10

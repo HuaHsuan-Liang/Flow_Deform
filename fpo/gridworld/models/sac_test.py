@@ -127,6 +127,9 @@ class SAC_self:
             'alpha_losses': [],
         }
 
+        # Best model tracking (by eval mean return)
+        self.best_mean_ret = -float("inf")
+
     # Hyperparameters / alpha
     def _init_hyperparameters(self, hyperparameters):
         # Core SAC params
@@ -260,6 +263,20 @@ class SAC_self:
                 wandb.save(f"{self.run_name}_actor_iter{i_so_far}.pth")
                 wandb.save(f"{self.run_name}_critic1_iter{i_so_far}.pth")
                 wandb.save(f"{self.run_name}_critic2_iter{i_so_far}.pth")
+
+                # Save best checkpoints based on eval mean return
+                if mean_ret > self.best_mean_ret:
+                    self.best_mean_ret = mean_ret
+                    best_actor_path = f"{self.run_name}_best_actor.pth"
+                    best_c1_path = f"{self.run_name}_best_critic1.pth"
+                    best_c2_path = f"{self.run_name}_best_critic2.pth"
+                    torch.save(self.actor.state_dict(), best_actor_path)
+                    torch.save(self.critic1.state_dict(), best_c1_path)
+                    torch.save(self.critic2.state_dict(), best_c2_path)
+                    wandb.summary["best_eval_mean_return"] = mean_ret
+                    wandb.save(best_actor_path)
+                    wandb.save(best_c1_path)
+                    wandb.save(best_c2_path)
 
     # Rollout & evaluation
     def rollout(self) -> int:
