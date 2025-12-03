@@ -16,12 +16,14 @@ import orbax.checkpoint
 from flow_policy import ppo, rollouts
 from flow_policy.gym_utils import GymWrapper, GymRolloutState, gym_rollout, eval_policy_gym
 
+
 def log_final_video(
     env_name: str,
     agent_state: ppo.PpoState,
     wandb_run: wandb.sdk.wandb_run.Run,
     config: ppo.PpoConfig,
     seed: int,
+    run_tag: str,
 ) -> None:
     """
     Run a short deterministic rollout with the trained policy and log a video to wandb.
@@ -29,7 +31,8 @@ def log_final_video(
     try:
         # Create a single environment for recording
         # Use RecordVideo wrapper
-        video_folder = f"videos/ppo_{env_name}_{wandb_run.id}"
+        # Folder naming: [task]_[method]_run[YYYYMMDD_HHMMSS]
+        video_folder = os.path.join("videos", run_tag)
         os.makedirs(video_folder, exist_ok=True)
         
         # Force rgb_array for rendering
@@ -74,12 +77,13 @@ def log_final_video(
         # Don't let rendering failures crash training; just report them.
         print(f"Could not render final policy video: {e}", flush=True)
 
-def save_checkpoint(agent_state: ppo.PpoState, run_id: str, step: int, base_dir: str = "checkpoints"):
+def save_checkpoint(agent_state: ppo.PpoState, run_tag: str, step: int, base_dir: str = "checkpoints"):
     """Save agent state checkpoint."""
     try:
         # Orbax requires absolute paths
         abs_base_dir = os.path.abspath(base_dir)
-        ckpt_dir = os.path.join(abs_base_dir, run_id, str(step))
+        # Folder naming: [task]_[method]_run[YYYYMMDD_HHMMSS]
+        ckpt_dir = os.path.join(abs_base_dir, run_tag, str(step))
         orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         orbax_checkpointer.save(ckpt_dir, agent_state)
         print(f"Saved checkpoint to {ckpt_dir}")
@@ -90,16 +94,49 @@ def main(
     env_name: str,
     wandb_entity: str,
     wandb_project: str,
-    config: ppo.PpoConfig,
+    config: ppo.PpoConfig | None = None,
     exp_name: str = "",
     seed: int = 0,
+    num_timesteps: int | None = None,
+    num_evals: int | None = None,
 ) -> None:
     """
     Train PPO using Gym environments (via GymWrapper).
     """
     
+    # If no config is provided, use a generic PPO default similar to Brax.
+    if config is None:
+        config = ppo.PpoConfig(
+            action_repeat=1,
+            batch_size=256,
+            discounting=0.99,
+            entropy_cost=0.0,
+            episode_length=1000,
+            learning_rate=3e-4,
+            normalize_observations=True,
+            num_envs=16,
+            num_evals=20,
+            num_minibatches=4,
+            # Default to ~300 outer iterations:
+            # outer_iters = num_timesteps / (iterations_per_env * num_envs)
+            # with these settings, 10_000_000 steps ≈ 305 iterations.
+            num_timesteps=10_000_000,
+            num_updates_per_batch=4,
+            reward_scaling=1.0,
+            unroll_length=32,
+        )
+
+    # Optional overrides for total timesteps / evals from CLI.
+    if num_timesteps is not None:
+        config = jdc.replace(config, num_timesteps=num_timesteps)
+    if num_evals is not None:
+        config = jdc.replace(config, num_evals=num_evals)
+
     # Logging
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Name components: [task] [method] [run][date & time]
+    method = "ppo"
+    run_tag = f"{env_name}_{method}_run{timestamp}"
     wandb_run = wandb.init(
         entity=wandb_entity,
         project=wandb_project,
@@ -192,11 +229,11 @@ def main(
     gym_env.close()
     
     # Save final checkpoint
-    save_checkpoint(agent_state, wandb_run.id, outer_iters)
+    save_checkpoint(agent_state, run_tag, outer_iters)
     
-    # Log final video
+    # Log final video to a similarly named folder
     print("Logging final video...")
-    log_final_video(env_name, agent_state, wandb_run, config, seed)
+    log_final_video(env_name, agent_state, wandb_run, config, seed, run_tag)
     
     # Finish wandb run to ensure all metrics are synced
     wandb.finish()

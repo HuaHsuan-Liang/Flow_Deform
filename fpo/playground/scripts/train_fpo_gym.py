@@ -16,19 +16,22 @@ import orbax.checkpoint
 from flow_policy import fpo, rollouts
 from flow_policy.gym_utils import GymWrapper, GymRolloutState, gym_rollout, eval_policy_gym
 
+
 def log_final_video(
     env_name: str,
     agent_state: fpo.FpoState,
     wandb_run: wandb.sdk.wandb_run.Run,
     config: fpo.FpoConfig,
     seed: int,
+    run_tag: str,
 ) -> None:
     """
     Run a short deterministic rollout with the trained policy and log a video to wandb.
     """
     try:
         # Create a single environment for recording
-        video_folder = f"videos/{env_name}_{wandb_run.id}"
+        # Folder naming: [task]_[method]_run[YYYYMMDD_HHMMSS]
+        video_folder = os.path.join("videos", run_tag)
         os.makedirs(video_folder, exist_ok=True)
         
         # Force rgb_array for rendering
@@ -78,11 +81,12 @@ def log_final_video(
         # Don't let rendering failures crash training; just report them.
         print(f"Could not render final policy video: {e}", flush=True)
 
-def save_checkpoint(agent_state: fpo.FpoState, run_id: str, step: int, base_dir: str = "checkpoints"):
+def save_checkpoint(agent_state: fpo.FpoState, run_tag: str, step: int, base_dir: str = "checkpoints"):
     """Save agent state checkpoint."""
     try:
         abs_base_dir = os.path.abspath(base_dir)
-        ckpt_dir = os.path.join(abs_base_dir, run_id, str(step))
+        # Folder naming: [task]_[method]_run[YYYYMMDD_HHMMSS]
+        ckpt_dir = os.path.join(abs_base_dir, run_tag, str(step))
         orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
         orbax_checkpointer.save(ckpt_dir, agent_state)
         print(f"Saved checkpoint to {ckpt_dir}")
@@ -103,6 +107,9 @@ def main(
     
     # Logging
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Name components: [task] [method] [run][date & time]
+    method = "fpo"
+    run_tag = f"{env_name}_{method}_run{timestamp}"
     wandb_run = wandb.init(
         entity=wandb_entity,
         project=wandb_project,
@@ -196,11 +203,11 @@ def main(
     gym_env.close()
     
     # Save final checkpoint
-    save_checkpoint(agent_state, wandb_run.id, outer_iters)
+    save_checkpoint(agent_state, run_tag, outer_iters)
     
-    # Log final video
+    # Log final video to a similarly named folder
     print("Logging final video...")
-    log_final_video(env_name, agent_state, wandb_run, config, seed)
+    log_final_video(env_name, agent_state, wandb_run, config, seed, run_tag)
 
 if __name__ == "__main__":
     tyro.cli(main, config=(tyro.conf.FlagConversionOff,))
