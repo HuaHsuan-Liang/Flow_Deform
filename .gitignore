@@ -1,26 +1,24 @@
-*.swp
-*.swo
-*.pyc
-*.egg-info
-*.ipynb_checkpoints
-__pycache__
-.coverage
-htmlcov
-.mypy_cache
-.dmypy.json
-.hypothesis
-.envrc
-.lvimrc
-.DS_Store
-.envrc
-.vite
-build
+# Python/Conda
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+.env
+env/
+venv/
+*.egg-info/
 
-**/.claude/settings.local.json
-
-venv
-*.pth
-.idea/
+# Project Artifacts
+checkpoints/
+videos/
 wandb/
-*.pkl
-CLAUDE.md
+*.mp4
+*.gif
+*.png
+*.jpg
+*.log
+
+# IDEs
+.vscode/
+.idea/
+*.swp
