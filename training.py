@@ -83,6 +83,15 @@ def run_playground_fpo_gym(
         if num_evals is not None:
              config = jdc.replace(config, num_evals=num_evals)
 
+        playground_train_fpo_gym.main(
+                env_name=env_name,
+                wandb_entity=wandb_entity,
+                wandb_project=wandb_project,
+                config=config,
+                exp_name=exp_name,
+                seed=seed,
+        )
+
 def run_playground_ppo_gym(
         env_name: str,
         wandb_entity: str,
