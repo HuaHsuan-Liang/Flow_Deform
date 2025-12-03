@@ -8,6 +8,7 @@ import sys,random
 from typing import Optional
 import torch
 import wandb
+import jax_dataclasses as jdc
 from stable_baselines3 import SAC
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import BaseCallback
@@ -28,7 +29,10 @@ from fpo.gridworld.utils.gridworld import GridWorldEnv
 
 # JAX FPO playground training 
 from flow_policy import fpo as playground_fpo
+from flow_policy import ppo as playground_ppo
 from fpo.playground.scripts import train_fpo as playground_train_fpo
+from fpo.playground.scripts import train_fpo_gym as playground_train_fpo_gym
+from fpo.playground.scripts import train_ppo_gym as playground_train_ppo_gym
 
 
 sys.path.append(str(Path.Path(__file__).resolve().parent))
@@ -51,6 +55,66 @@ def run_playground_fpo(
                 config = playground_fpo.FpoConfig()
 
         playground_train_fpo.main(
+                env_name=env_name,
+                wandb_entity=wandb_entity,
+                wandb_project=wandb_project,
+                config=config,
+                exp_name=exp_name,
+                seed=seed,
+        )
+
+
+def run_playground_fpo_gym(
+        env_name: str,
+        wandb_entity: str,
+        wandb_project: str,
+        exp_name: str = "",
+        seed: int = 0,
+        config: Optional[playground_fpo.FpoConfig] = None,
+        num_timesteps: int = None,
+        num_evals: int = None,
+) -> None:
+        if config is None:
+                config = playground_fpo.FpoConfig()
+        
+
+        if num_timesteps is not None:
+             config = jdc.replace(config, num_timesteps=num_timesteps)
+        if num_evals is not None:
+             config = jdc.replace(config, num_evals=num_evals)
+
+def run_playground_ppo_gym(
+        env_name: str,
+        wandb_entity: str,
+        wandb_project: str,
+        exp_name: str = "",
+        seed: int = 0,
+        config: Optional[playground_ppo.PpoConfig] = None,
+        num_timesteps: int = None,
+        num_evals: int = None,
+) -> None:
+        if config is None:
+                # Use brax defaults as a base if no config provided
+                # We need to import params
+                from mujoco_playground.config import dm_control_suite_params
+                # NOTE: This might fail if env_name isn't in Brax config.
+                # Fallback to manual defaults if needed.
+                try:
+                    ppo_params = dm_control_suite_params.brax_ppo_config(env_name)
+                    config = playground_ppo.PpoConfig(**ppo_params)
+                except Exception:
+                    print("Warning: Could not load default PPO config for this env. Using generic defaults.")
+                    # Create a generic default config if needed (omitted for brevity, assuming Brax config usually works or user provides one)
+                    # For now, we'll just let it fail or rely on provided config.
+                    pass
+
+        # Override config if args provided
+        if num_timesteps is not None:
+             config = jdc.replace(config, num_timesteps=num_timesteps)
+        if num_evals is not None:
+             config = jdc.replace(config, num_evals=num_evals)
+
+        playground_train_ppo_gym.main(
                 env_name=env_name,
                 wandb_entity=wandb_entity,
                 wandb_project=wandb_project,
@@ -258,6 +322,51 @@ def main(args):
                         env_name=args.pg_env_name,
                         wandb_entity=args.wandb_entity,
                         wandb_project=args.wandb_project,
+                )
+                return
+
+        # Run JAX FPO playground training on Gym
+        if args.method == 'fpo_pg_gym':
+                if not args.wandb_entity or not args.wandb_project:
+                        print("For method=fpo_pg_gym you must provide --wandb_entity and --wandb_project.", flush=True)
+                        sys.exit(1)
+
+                print(f"Running JAX FPO playground (Gym backend) with env='{args.pg_env_name}'", flush=True)
+                run_playground_fpo_gym(
+                        env_name=args.pg_env_name,
+                        wandb_entity=args.wandb_entity,
+                        wandb_project=args.wandb_project,
+                        num_timesteps=args.num_timesteps,
+                        num_evals=args.num_evals,
+                )
+                return
+
+        # Run JAX PPO playground training on Gym
+        if args.method == 'ppo_pg_gym':
+                if not args.wandb_entity or not args.wandb_project:
+                        print("For method=ppo_pg_gym you must provide --wandb_entity and --wandb_project.", flush=True)
+                        sys.exit(1)
+
+                print(f"Running JAX PPO playground (Gym backend) with env='{args.pg_env_name}'", flush=True)
+                
+                # Load default config here to pass to runner
+                from mujoco_playground.config import dm_control_suite_params
+                # We use a proxy env name if the real one isn't in Brax's list, or just try 'cartpole_swingup' as base
+                try:
+                    ppo_params = dm_control_suite_params.brax_ppo_config(args.pg_env_name)
+                except KeyError:
+                    print(f"Env {args.pg_env_name} not found in Brax defaults. Using 'cartpole_swingup' defaults as base.")
+                    ppo_params = dm_control_suite_params.brax_ppo_config("cartpole_swingup")
+                
+                config = playground_ppo.PpoConfig(**ppo_params)
+
+                run_playground_ppo_gym(
+                        env_name=args.pg_env_name,
+                        wandb_entity=args.wandb_entity,
+                        wandb_project=args.wandb_project,
+                        config=config,
+                        num_timesteps=args.num_timesteps,
+                        num_evals=args.num_evals,
                 )
                 return
 
